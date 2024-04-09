@@ -1,10 +1,19 @@
 /**
  * External dependencies
  */
-import { ActorRefFrom, sendTo, setup, fromCallback } from 'xstate5';
+import {
+	ActorRefFrom,
+	sendTo,
+	setup,
+	fromCallback,
+	fromPromise,
+	assign,
+} from 'xstate5';
 import React from 'react';
 import classnames from 'classnames';
-import { getQuery } from '@woocommerce/navigation';
+import { getQuery, navigateTo } from '@woocommerce/navigation';
+import { OPTIONS_STORE_NAME, TaskListType, TaskType } from '@woocommerce/data';
+import { dispatch } from '@wordpress/data';
 
 /**
  * Internal dependencies
@@ -13,10 +22,17 @@ import { LaunchYourStoreHubSidebar } from './components/launch-store-hub';
 import type { LaunchYourStoreComponentProps } from '..';
 import type { mainContentMachine } from '../main-content/xstate';
 import { updateQueryParams, createQueryParamsListener } from '../common';
+import { taskClickedAction, getLysTasklist } from './tasklist';
 
 export type SidebarMachineContext = {
 	externalUrl: string | null;
 	mainContentMachineRef: ActorRefFrom< typeof mainContentMachine >;
+	tasklist?: TaskListType;
+	testOrderCount: number;
+	removeTestOrders?: boolean;
+	launchStoreError?: {
+		message: string;
+	};
 };
 export type SidebarComponentProps = LaunchYourStoreComponentProps & {
 	context: SidebarMachineContext;
@@ -24,14 +40,27 @@ export type SidebarComponentProps = LaunchYourStoreComponentProps & {
 export type SidebarMachineEvents =
 	| { type: 'EXTERNAL_URL_UPDATE' }
 	| { type: 'OPEN_EXTERNAL_URL'; url: string }
+	| { type: 'TASK_CLICKED'; task: TaskType }
 	| { type: 'OPEN_WC_ADMIN_URL'; url: string }
 	| { type: 'OPEN_WC_ADMIN_URL_IN_CONTENT_AREA'; url: string }
-	| { type: 'LAUNCH_STORE' }
-	| { type: 'LAUNCH_STORE_SUCCESS' };
+	| { type: 'LAUNCH_STORE'; removeTestOrders: boolean }
+	| { type: 'LAUNCH_STORE_SUCCESS' }
+	| { type: 'POP_BROWSER_STACK' };
 
 const sidebarQueryParamListener = fromCallback( ( { sendBack } ) => {
 	return createQueryParamsListener( 'sidebar', sendBack );
 } );
+
+const launchStoreAction = async () => {
+	const results = await dispatch( OPTIONS_STORE_NAME ).updateOptions( {
+		woocommerce_coming_soon: 'no',
+		'launch-status': 'launched',
+	} );
+	if ( results.success ) {
+		return results;
+	}
+	throw new Error( JSON.stringify( results ) );
+};
 
 export const sidebarMachine = setup( {
 	types: {} as {
@@ -44,7 +73,7 @@ export const sidebarMachine = setup( {
 	actions: {
 		openExternalUrl: ( { event } ) => {
 			if ( event.type === 'OPEN_EXTERNAL_URL' ) {
-				window.open( event.url, '_self' );
+				navigateTo( { url: event.url } );
 			}
 		},
 		showLaunchStoreSuccessPage: sendTo(
@@ -61,6 +90,19 @@ export const sidebarMachine = setup( {
 		) => {
 			updateQueryParams( params );
 		},
+		taskClicked: ( { event } ) => {
+			if ( event.type === 'TASK_CLICKED' ) {
+				taskClickedAction( event );
+			}
+		},
+		openWcAdminUrl: ( { event } ) => {
+			if ( event.type === 'OPEN_WC_ADMIN_URL' ) {
+				navigateTo( { url: event.url } );
+			}
+		},
+		windowHistoryBack: () => {
+			window.history.back();
+		},
 	},
 	guards: {
 		hasSidebarLocation: (
@@ -73,12 +115,15 @@ export const sidebarMachine = setup( {
 	},
 	actors: {
 		sidebarQueryParamListener,
+		getTasklist: fromPromise( getLysTasklist ),
+		updateLaunchStoreOptions: fromPromise( launchStoreAction ),
 	},
 } ).createMachine( {
 	id: 'sidebar',
 	initial: 'navigate',
 	context: ( { input } ) => ( {
 		externalUrl: null,
+		testOrderCount: 0,
 		mainContentMachineRef: input.mainContentMachineRef,
 	} ),
 	invoke: {
@@ -111,10 +156,18 @@ export const sidebarMachine = setup( {
 			initial: 'preLaunchYourStoreHub',
 			states: {
 				preLaunchYourStoreHub: {
-					always: 'launchYourStoreHub',
-					// do async stuff here such as retrieving task statuses
+					invoke: {
+						src: 'getTasklist',
+						onDone: {
+							actions: assign( {
+								tasklist: ( { event } ) => event.output,
+							} ),
+							target: 'launchYourStoreHub',
+						},
+					},
 				},
 				launchYourStoreHub: {
+					id: 'launchYourStoreHub',
 					tags: 'sidebar-visible',
 					meta: {
 						component: LaunchYourStoreHubSidebar,
@@ -132,11 +185,21 @@ export const sidebarMachine = setup( {
 			initial: 'launching',
 			states: {
 				launching: {
-					tags: 'fullscreen',
-					entry: { type: 'showLoadingPage' },
-					on: {
-						LAUNCH_STORE_SUCCESS: {
+					entry: assign( { launchStoreError: undefined } ), // clear the errors if any from previously
+					invoke: {
+						src: 'updateLaunchStoreOptions',
+						onDone: {
 							target: '#storeLaunchSuccessful',
+						},
+						onError: {
+							actions: assign( {
+								launchStoreError: ( { event } ) => {
+									return {
+										message: JSON.stringify( event.error ), // for some reason event.error is an empty object, worth investigating if we decide to use the error message somewhere
+									};
+								},
+							} ),
+							target: '#launchYourStoreHub',
 						},
 					},
 				},
@@ -169,7 +232,15 @@ export const sidebarMachine = setup( {
 		OPEN_EXTERNAL_URL: {
 			target: '#openExternalUrl',
 		},
-		OPEN_WC_ADMIN_URL: {},
+		TASK_CLICKED: {
+			actions: 'taskClicked',
+		},
+		OPEN_WC_ADMIN_URL: {
+			actions: 'openWcAdminUrl',
+		},
+		POP_BROWSER_STACK: {
+			actions: 'windowHistoryBack',
+		},
 		OPEN_WC_ADMIN_URL_IN_CONTENT_AREA: {},
 	},
 } );

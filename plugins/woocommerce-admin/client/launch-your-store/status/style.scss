@@ -10,7 +10,7 @@
 .woocommerce-lys-status-pill {
 	display: flex;
 	align-items: center;
-	background-color: var(--gray-gray-5, #dcdcde);
+	background-color: #eaeaeb;
 	color: #2c3338;
 	padding: 0 3px 0 10px;
 	font-size: 12px;
@@ -30,6 +30,17 @@
 			border-radius: 3px;
 			background-color: #005c12;
 			margin-right: 4px;
+		}
+	}
+}
+.woocommerce-lys-status-popover {
+	a.components-button.components-menu-item__button {
+		padding: 6px 8px;
+	}
+
+	.components-menu-item__item {
+		svg {
+			margin-right: 8px;
 		}
 	}
 }
